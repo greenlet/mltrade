@@ -1,0 +1,10 @@
+
+jupyter
+matplotlib
+numpy
+pandas
+pydantic-cli
+tensorboard
+torch
+tqdm
+
