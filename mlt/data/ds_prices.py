@@ -1,3 +1,4 @@
+
 from datetime import datetime
 from pathlib import Path
 from typing import Generator, Union, Optional
@@ -63,25 +64,103 @@ def discount_from_mask(mask: np.ndarray) -> np.ndarray:
     return res
 
 
-class BatchResType:
-    inp: np.ndarray
-    tgt: np.ndarray
-    div: np.ndarray
-    inp_t: Optional[torch.Tensor]
-    tgt_t: Optional[torch.Tensor]
-    div_t: Optional[torch.Tensor]
+def to_tensor(x: np.ndarray) -> torch.Tensor:
+    return torch.from_numpy(x).type(torch.float32)
 
-    def __init__(self, inp: np.ndarray, tgt: np.ndarray, div: np.ndarray, inp_t: Optional[torch.Tensor] = None,
-                 tgt_t: Optional[torch.Tensor] = None, div_t: Optional[torch.Tensor] = None):
-        self.inp = inp
-        self.tgt = tgt
-        self.div = div
-        self.inp_t = inp_t
-        self.tgt_t = tgt_t
-        self.div_t = div_t
+
+class BatchResType:
+    prices: list[np.ndarray]
+    timestamp: list[np.ndarray]
+    mask: Optional[list[np.ndarray]]
+    discount: Optional[list[np.ndarray]]
+    n_batch: int
+    n_seq: int
+    n_prices: int
+
+    def __init__(self, prices: list[np.ndarray], timestamp: list[np.ndarray],
+                 mask: Optional[list[np.ndarray]], discount: Optional[list[np.ndarray]]):
+        self.prices = prices
+        self.timestamp = timestamp
+        self.mask = mask
+        self.discount = discount
+        self.n_batch = len(self.prices)
+        assert self.n_batch != 0 and self.n_batch == len(self.timestamp)
+        if self.mask is not None:
+            assert self.n_batch == len(self.mask) and self.n_batch == len(self.discount)
+        prices0 = self.prices[0]
+        assert prices0.ndim == 2
+        self.n_seq, self.n_prices = prices0.shape
+
+    def get_masked_tensors(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        assert self.mask is not None and self.discount is not None
+        inp, tgt = [], []
+        for prices, timestamp, mask in zip(self.prices, self.timestamp, self.mask):
+            prices_inp, prices_tgt = prices.copy(), prices.copy()
+            prices_inp[mask] = 0
+            prices_tgt[~mask] = 0
+            psts = np.concatenate([timestamp, prices_inp], axis=1)
+            inp.append(psts)
+            tgt.append(prices_tgt)
+        inp, tgt, div = np.stack(inp), np.stack(tgt), np.stack(self.discount)
+        div = div.reshape((self.n_batch, self.n_seq, 1))
+        inp, tgt, div = to_tensor(inp), to_tensor(tgt), to_tensor(div)
+        return inp, tgt, div
+
+    def get_last_masked_tensors(self, last_zeros: list[int]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        n_zeros = len(last_zeros)
+        timestamp, prices = self.timestamp[0].reshape((-1, 1)), self.prices[0]
+        inp = np.concatenate([timestamp, prices], axis=1)
+        inp = np.tile(inp, [n_zeros, 1, 1])
+        tgt = np.tile(prices, [n_zeros, 1, 1])
+        div = np.ones((n_zeros, self.n_seq, 1))
+        for iz, nz in enumerate(last_zeros):
+            inp[iz, -nz:, 1:] = 0
+            tgt[iz, :-nz] = 0
+            div[iz, -nz:] = np.arange(1, nz + 1).reshape((-1, 1))
+        inp, tgt, div = to_tensor(inp), to_tensor(tgt), to_tensor(div)
+        return inp, tgt, div
 
 
 BatchGenType = Generator[BatchResType, None, None]
+
+
+class MaskGenCfg:
+    mid_min_ratio: float
+    mid_max_ratio: float
+    last_min_ratio: float
+    last_max_ratio: float
+    mid_min_num: int
+    mid_max_num: int
+    last_min_num: int
+    last_max_num: int
+
+    def __init__(self, mid_min_ratio: float = 0, mid_max_ratio: float = 0,
+                last_min_ratio: float = 0, last_max_ratio: float = 0,
+                mid_min_num: int = 0, mid_max_num: int = 0,
+                last_min_num: int = 0, last_max_num: int = 0
+            ):
+        assert mid_min_ratio == 0 or mid_min_num == 0, f'Failed: mid_min_ratio={mid_min_ratio:.3f} == 0 or mid_min_num={mid_min_num} == 0'
+        assert mid_max_ratio == 0 or mid_max_num == 0, f'Failed: mid_max_ratio={mid_max_ratio:.3f} == 0 or mid_max_num={mid_max_num} == 0'
+        assert last_min_ratio == 0 or last_min_num == 0, f'Failed: last_min_ratio={last_min_ratio:.3f} == 0 or last_min_num={last_min_num} == 0'
+        assert last_max_ratio == 0 or last_max_num == 0, f'Failed: last_max_ratio={last_max_ratio:.3f} == 0 or last_max_num={last_max_num} == 0'
+        self.mid_min_ratio = mid_min_ratio
+        self.mid_max_ratio = mid_max_ratio
+        self.last_min_ratio = last_min_ratio
+        self.last_max_ratio = last_max_ratio
+        self.mid_min_num = mid_min_num
+        self.mid_max_num = mid_max_num
+        self.last_min_num = last_min_num
+        self.last_max_num = last_max_num
+
+    def get_ranges(self, n: int) -> tuple[tuple[int, int], tuple[int, int]]:
+        mid_min_num = self.mid_min_num or int(np.ceil(self.mid_min_ratio * n))
+        mid_max_num = self.mid_max_num or int(np.ceil(self.mid_max_ratio * n))
+        last_min_num = self.last_min_num or int(np.ceil(self.last_min_ratio * n))
+        last_max_num = self.last_max_num or int(np.ceil(self.last_max_ratio * n))
+        assert 0 <= mid_min_num <= mid_max_num
+        assert 0 <= last_min_num <= last_max_num
+        assert mid_max_num + last_max_num < n - 1
+        return (mid_min_num, mid_max_num), (last_min_num, last_max_num)
 
 
 class DsPrices:
@@ -99,12 +178,9 @@ class DsPrices:
     batch_size: int
     min_inp_size: int
     max_inp_size: int
-    min_inp_zeros: int
-    max_inp_zeros_val: int
     rng: np.random.Generator
 
-    def __init__(self, fpath: Path, batch_size: int, min_inp_size: int, max_inp_size: int,
-                 min_inp_zeros: int, max_inp_zeros_rate: float, train_ratio: float = 0.9):
+    def __init__(self, fpath: Path, batch_size: int, min_inp_size: int, max_inp_size: int, train_ratio: float = 0.9):
         self.fpath = fpath
         self.df = pd.read_csv(self.fpath, sep=',', header=0, dtype=np.float64)
         self.prices_names = [cn for cn in self.df.columns if cn not in ('Date', 'Time')]
@@ -124,68 +200,54 @@ class DsPrices:
         self.batch_size = batch_size
         self.min_inp_size = min_inp_size
         self.max_inp_size = max_inp_size
-        self.min_inp_zeros = min_inp_zeros
-        self.max_inp_zeros_rate = max_inp_zeros_rate
 
         self.rng = np.random.default_rng()
 
-    def _gen_mask_mixed(self, inp_size: int, n_zeros: int, force_last: bool) -> np.ndarray:
+    def _gen_mask(self, inp_size: int, mid_range: tuple[int, int], last_range: tuple[int, int]):
         mask = np.full(inp_size, False)
-        n_last = 0
-        if force_last:
-            n_last_min = self.min_inp_zeros
-            n_last_max = max(n_zeros // 2, n_last_min)
-            n_last = self.rng.integers(n_last_min, n_last_max, endpoint=True)
+        n_mid, n_last = self.rng.integers(*mid_range, endpoint=True), self.rng.integers(*last_range, endpoint=True)
+        if n_last > 0:
             mask[-n_last:] = True
-            n_zeros -= n_last
-        if n_zeros > 0:
-            mask_inds = 1 + self.rng.choice(inp_size - n_last - 1, n_zeros, replace=False)
+        if n_mid > 0:
+            mask_inds = 1 + self.rng.choice(inp_size - 1 - n_last, n_mid, replace=False)
             mask[mask_inds] = True
         return mask
 
-    def _get_it(self, prices: np.ndarray, timestamps: np.ndarray, n_iter: int, with_tensor: bool) -> BatchGenType:
+    def _get_it(self, prices: np.ndarray, timestamps: np.ndarray, n_iter: int, cfgm: Optional[MaskGenCfg]) -> BatchGenType:
         n = len(prices)
+        gen_mask = cfgm is not None
+        cfgm = cfgm or MaskGenCfg()
 
         for i in range(n_iter):
             inp_size = self.rng.integers(self.min_inp_size, self.max_inp_size, endpoint=True)
+            mid_range, last_range = cfgm.get_ranges(inp_size)
             n_max = n - inp_size
             assert 0 <= n_max
-            inp_batch, tgt_batch, div_batch = [], [], []
+            prices_batch, timestamp_batch = [], []
+            mask_batch, discount_batch = ([], []) if gen_mask else (None, None)
             for _ in range(self.batch_size):
                 ind = np.random.randint(0, n_max)
                 inds = slice(ind, ind + inp_size)
                 ps, ts = prices[inds], timestamps[inds]
                 ps = ps / ps[0]
-                max_inp_zeros = int(np.ceil(inp_size * self.max_inp_zeros_rate))
-                n_zeros = self.rng.integers(self.min_inp_zeros, max_inp_zeros, endpoint=True)
+                prices_batch.append(ps)
+                timestamp_batch.append(ts)
 
-                mask = self._gen_mask_mixed(inp_size, n_zeros, force_last=i % 2 == 1)
-                div = discount_from_mask(mask)
-                div = div.reshape((len(div), 1))
+                if gen_mask:
+                    mask = self._gen_mask(inp_size, mid_range, last_range)
+                    discount = discount_from_mask(mask).reshape((inp_size, 1))
+                    mask_batch.append(mask)
+                    discount_batch.append(discount)
 
-                ps_target = ps.copy()
-                ps[mask] = 0
-                ps_target[~mask] = 0
-                tsps = np.concatenate([ts, ps], axis=1)
-                inp_batch.append(tsps)
-                tgt_batch.append(ps_target)
-                div_batch.append(div)
-
-            inp_batch, tgt_batch, div_batch = np.stack(inp_batch), np.stack(tgt_batch), np.stack(div_batch)
-            inp_batch_t, tgt_batch_t, div_batch_t = None, None, None
-            if with_tensor:
-                inp_batch_t, tgt_batch_t, div_batch_t = torch.from_numpy(inp_batch), torch.from_numpy(tgt_batch), torch.from_numpy(div_batch)
-                inp_batch_t, tgt_batch_t, div_batch_t = inp_batch_t.type(torch.float32), tgt_batch_t.type(torch.float32), div_batch_t.type(torch.float32)
-            res = BatchResType(
-                inp=inp_batch, tgt=tgt_batch, div=div_batch,
-                inp_t=inp_batch_t, tgt_t=tgt_batch_t, div_t=div_batch_t)
+            res = BatchResType(prices=prices_batch, timestamp=timestamp_batch,
+                               mask=mask_batch, discount=discount_batch)
             yield res
 
-    def get_train_it(self, n_iter: int, with_tensor: bool = False) -> BatchGenType:
-        for res in self._get_it(self.prices_train, self.timestamps_train, n_iter, with_tensor):
+    def get_train_it(self, n_iter: int, with_tensor: bool = False, cfgm: Optional[MaskGenCfg] = None) -> BatchGenType:
+        for res in self._get_it(self.prices_train, self.timestamps_train, n_iter, cfgm):
             yield res
 
-    def get_val_it(self, n_iter: int, with_tensor: bool = False) -> BatchGenType:
-        for res in self._get_it(self.prices_val, self.timestamps_val, n_iter, with_tensor):
+    def get_val_it(self, n_iter: int, with_tensor: bool = False, cfgm: Optional[MaskGenCfg] = None) -> BatchGenType:
+        for res in self._get_it(self.prices_val, self.timestamps_val, n_iter, cfgm):
             yield res
 
