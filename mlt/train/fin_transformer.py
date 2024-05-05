@@ -60,7 +60,8 @@ class FinMetricCalc:
     device: torch.device
     metrics: list[FinMetric]
     horizon_to_metrics: dict[int, FinMetric]
-    calc_steps: set[int]
+    calc_steps: np.ndarray
+    calc_steps_set: set[int]
 
     def __init__(self, n_steps_total: int, n_steps_calc: int, last_zeros: list[int],
                  model: nn.Module, device: torch.device):
@@ -76,11 +77,14 @@ class FinMetricCalc:
             calc_steps = np.array([self.n_steps_total - 1])
         else:
             calc_steps = np.linspace(0, self.n_steps_total - 1, self.n_steps_calc, endpoint=True, dtype=int)
-        self.calc_steps = set(calc_steps)
+        self.calc_steps = calc_steps
+        self.calc_steps_set = set(self.calc_steps)
 
     def set_step(self, step: int, batch: BatchResType):
-        if step not in self.calc_steps:
+        if step not in self.calc_steps_set:
             return
+        if step == self.calc_steps[0]:
+            self.metrics = [FinMetric(horizon=nz) for nz in self.last_zeros]
         inp, tgt, div = batch.get_last_masked_tensors(self.last_zeros)
         inp, tgt, div = inp.to(self.device), tgt.to(self.device), div.to(self.device)
         training = self.model.training
@@ -93,7 +97,7 @@ class FinMetricCalc:
             met.diff = np.sqrt(loss.item())
             met.diff_mean += met.diff
 
-        if step == self.n_steps_total - 1:
+        if step == self.calc_steps[-1]:
             for met in self.metrics:
                 met.diff_mean /= self.n_steps_calc
 
