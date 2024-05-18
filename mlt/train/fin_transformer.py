@@ -41,14 +41,17 @@ def find_last_subdir(dir_path: Path) -> Optional[str]:
 def masked_mse_loss(out: torch.Tensor, tgt: torch.Tensor, div: torch.Tensor) -> torch.Tensor:
     mask = tgt > 0
     diff = torch.masked_select(out, mask) - torch.masked_select(tgt, mask)
+    # print(f'before: {diff}')
     diff /= torch.masked_select(div, mask)
+    # print(f'div:    {torch.masked_select(div, mask)}')
+    # print(f'after:  {diff}')
     return torch.mean(diff**2)
 
 
 @dataclass
 class FinMetric:
     horizon: int
-    diff: float = 0
+    diff: float = -1
     diff_mean: float = 0
 
 
@@ -77,6 +80,7 @@ class FinMetricCalc:
             calc_steps = np.array([self.n_steps_total - 1])
         else:
             calc_steps = np.linspace(0, self.n_steps_total - 1, self.n_steps_calc, endpoint=True, dtype=int)
+        print(f'FinMetricCalc. calc_steps={calc_steps}')
         self.calc_steps = calc_steps
         self.calc_steps_set = set(self.calc_steps)
 
@@ -96,6 +100,8 @@ class FinMetricCalc:
             loss = masked_mse_loss(out[iz], tgt[iz], div[iz])
             met.diff = np.sqrt(loss.item())
             met.diff_mean += met.diff
+        # print(self.metrics)
+        self.horizon_to_metrics = {met.horizon: met for met in self.metrics}
 
         if step == self.calc_steps[-1]:
             for met in self.metrics:

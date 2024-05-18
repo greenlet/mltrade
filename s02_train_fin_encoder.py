@@ -36,7 +36,7 @@ class ArgsTrain(BaseModel):
     device: str = Field(
         'cpu',
         required=False,
-        description='Device to run training on. Can have values: "cpu", "gpu"',
+        description='Device to run training on. Can have values: "cpu", "cuda"',
         cli=('--device',)
     )
     epochs: Optional[int] = Field(
@@ -85,8 +85,8 @@ def main(args: ArgsTrain) -> int:
     train_ratio = 0.9
     min_inp_size = 20 * 105 # 105 5-min intervals in a trading day (10:00 - 18:45)
     max_inp_size = 90 * 105
-    min_inp_size = 5 * 105
-    max_inp_size = 20 * 105
+    min_inp_size = 15 * 105
+    max_inp_size = 25 * 105
     device = torch.device(args.device)
     print(f'Pytorch device: {device}')
 
@@ -110,7 +110,7 @@ def main(args: ArgsTrain) -> int:
     val_loss_min = None
     last_checkpoint_path, best_checkpoint_path = train_path / 'last.pth', train_path / 'best.pth'
     last_zeros = [1, 3, 5, 10]
-    cfg_mask = MaskGenCfg(mid_min_num=2, mid_max_ratio=0.6, last_min_num=1, last_max_num=10)
+    cfg_mask = MaskGenCfg(mid_min_num=2, mid_max_ratio=0.6, last_min_num=1, last_max_num=20)
     for epoch in range(args.epochs):
         train_it = ds.get_train_it(args.train_epoch_steps, cfgm=cfg_mask)
         pbar = trange(args.train_epoch_steps, desc=f'Epoch {epoch}', unit='batch')
@@ -129,7 +129,9 @@ def main(args: ArgsTrain) -> int:
             train_loss += loss.item()
 
             train_metric.set_step(step, batch)
-            met_str = f'diff@1: {train_metric.horizon_to_metrics[1].diff:.3f}'
+            diff_1 = train_metric.horizon_to_metrics[1].diff
+            met_str = 'diff@1: '
+            met_str += 'null' if diff_1 < 0 else f'{diff_1:.3f}'
 
             pbar.set_postfix_str(f'Train. loss: {loss.item():.6f}. {met_str}')
         pbar.close()
@@ -137,6 +139,10 @@ def main(args: ArgsTrain) -> int:
         tbsw.add_scalar('Loss/Train', train_loss, epoch)
         for met in train_metric.metrics:
             tbsw.add_scalar(f'Diff@{met.horizon}/Train', met.diff_mean, epoch)
+        del train_metric
+
+        if args.device == 'cuda':
+            torch.cuda.empty_cache()
 
         val_it = ds.get_val_it(args.val_epoch_steps, cfgm=cfg_mask)
         pbar = trange(args.val_epoch_steps, desc=f'Epoch {epoch}', unit='batch')
@@ -160,6 +166,7 @@ def main(args: ArgsTrain) -> int:
         tbsw.add_scalar('Loss/Val', val_loss, epoch)
         for met in val_metric.metrics:
             tbsw.add_scalar(f'Diff@{met.horizon}/Val', met.diff_mean, epoch)
+        del val_metric
 
         print(f'Train loss: {train_loss:.6f}. Val loss: {val_loss:.6f}')
         best = False

@@ -124,10 +124,15 @@ class BatchResType:
         inp = np.tile(inp, [n_zeros, 1, 1])
         tgt = np.tile(prices, [n_zeros, 1, 1])
         div = np.ones((n_zeros, self.n_seq, 1))
+        mask = np.full(inp.shape[1], False)
         for iz, nz in enumerate(last_zeros):
             inp[iz, -nz:, 1:] = 0
             tgt[iz, :-nz] = 0
-            div[iz, -nz:] = np.arange(1, nz + 1).reshape((-1, 1))
+            m = mask.copy()
+            m[-nz:] = True
+            disc = discount_from_mask(m, timestamp)
+            # print(disc[-max(last_zeros):])
+            div[iz] = disc[..., None]
         inp, tgt, div = to_tensor(inp), to_tensor(tgt), to_tensor(div)
         return inp, tgt, div
 

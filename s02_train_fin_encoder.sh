@@ -1,4 +1,3 @@
-#!/bin/zsh
 
 code_path=$HOME/prog
 data_path=$HOME/data
@@ -7,9 +6,10 @@ ds_file_path=$mltrade_root_path/stocks_1.1.18-9.2.24_close.csv
 train_root_path=$data_path/train_mltrade
 
 device=cpu
-epochs=50
-train_epoch_steps=20
-val_epoch_steps=20
+device=cuda
+epochs=200
+train_epoch_steps=1000
+val_epoch_steps=1000
 #epochs=3
 #train_epoch_steps=10
 #val_epoch_steps=10

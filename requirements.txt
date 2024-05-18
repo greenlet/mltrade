@@ -7,4 +7,5 @@ pydantic-cli
 tensorboard
 torch
 tqdm
+protobuf==4.25.0
 
