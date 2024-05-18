@@ -1,4 +1,4 @@
-
+import os.path
 from datetime import datetime
 from pathlib import Path
 from typing import Generator, Union, Optional
@@ -28,9 +28,13 @@ def row_to_timestamp(row):
     return dt.timestamp()
 
 
-def discount_from_mask(mask: np.ndarray) -> np.ndarray:
+def discount_from_mask(mask: np.ndarray, ts: np.ndarray) -> np.ndarray:
     n = len(mask)
+    ts = ts.reshape(n).astype(int)
     res = np.ones(n)
+    res[1:] = ts[1:] - ts[:-1]
+    # For the sake of consistency, we never predict 0 time price
+    res[0] = ts[1] - ts[0]
     ind = 0
     while ind < n:
         if mask[ind]:
@@ -41,22 +45,29 @@ def discount_from_mask(mask: np.ndarray) -> np.ndarray:
             if ind == 0:
                 assert ind1 < n
                 for i in range(off):
-                    res[ind1 - 1 - i] = i + 1
+                    # res[ind1 - 1 - i] = i + 1
+                    res[ind1 - 1 - i] = ts[ind1] - ts[ind1 - 1 - i]
             elif ind1 == n:
+                assert ind > 0
                 for i in range(off):
-                    res[ind + i] = i + 1
+                    # res[ind + i] = i + 1
+                    res[ind + i] = ts[ind + i] - ts[ind - 1]
             else:
-                j, up = 0, True
+                # j, up = 0, True
+                # for i in range(off):
+                #     if up:
+                #         j += 1
+                #         off2 = off // 2
+                #         if j > off2:
+                #             j = off2 + off % 2
+                #             up = False
+                #     else:
+                #         j -= 1
+                #     res[ind + i] = j
                 for i in range(off):
-                    if up:
-                        j += 1
-                        off2 = off // 2
-                        if j > off2:
-                            j = off2 + off % 2
-                            up = False
-                    else:
-                        j -= 1
-                    res[ind + i] = j
+                    dtl = ts[ind + i] - ts[ind - 1]
+                    dtr = ts[ind1] - ts[ind + i]
+                    res[ind + i] = min(dtl, dtr)
             ind = ind1
         else:
             ind += 1
@@ -175,6 +186,7 @@ class DsPrices:
     df_val: pd.DataFrame
     prices_train: np.ndarray
     prices_val: np.ndarray
+    min_timestamp_diff: float
     batch_size: int
     min_inp_size: int
     max_inp_size: int
@@ -192,6 +204,8 @@ class DsPrices:
         self.n_val = len(self.df) - self.n_train
         self.df_train = self.df.iloc[:self.n_train]
         self.df_val = self.df.iloc[self.n_train:]
+        ts = self.df['Timestamp'].to_numpy()
+        self.min_timestamp_diff = (ts[1:] - ts[:-1]).min()
 
         self.prices_train = self.df_train[self.prices_names].to_numpy()
         self.prices_val = self.df_val[self.prices_names].to_numpy()
@@ -229,13 +243,13 @@ class DsPrices:
                 ind = np.random.randint(0, n_max)
                 inds = slice(ind, ind + inp_size)
                 ps, ts = prices[inds], timestamps[inds]
-                ps = ps / ps[0]
+                ps, ts = ps / ps[0], (ts - ts[0]) / self.min_timestamp_diff
                 prices_batch.append(ps)
                 timestamp_batch.append(ts)
 
                 if gen_mask:
                     mask = self._gen_mask(inp_size, mid_range, last_range)
-                    discount = discount_from_mask(mask).reshape((inp_size, 1))
+                    discount = discount_from_mask(mask, ts).reshape((inp_size, 1))
                     mask_batch.append(mask)
                     discount_batch.append(discount)
 
@@ -243,11 +257,34 @@ class DsPrices:
                                mask=mask_batch, discount=discount_batch)
             yield res
 
-    def get_train_it(self, n_iter: int, with_tensor: bool = False, cfgm: Optional[MaskGenCfg] = None) -> BatchGenType:
+    def get_train_it(self, n_iter: int, cfgm: Optional[MaskGenCfg] = None) -> BatchGenType:
         for res in self._get_it(self.prices_train, self.timestamps_train, n_iter, cfgm):
             yield res
 
-    def get_val_it(self, n_iter: int, with_tensor: bool = False, cfgm: Optional[MaskGenCfg] = None) -> BatchGenType:
+    def get_val_it(self, n_iter: int, cfgm: Optional[MaskGenCfg] = None) -> BatchGenType:
         for res in self._get_it(self.prices_val, self.timestamps_val, n_iter, cfgm):
             yield res
+
+
+def test_ds():
+    fname = 'stocks_1.1.18-9.2.24_close.csv'
+    fpath = Path(os.path.expandvars('$HOME')) / 'data/mltrade' / fname
+    batch_size = 5
+    min_inp_size, max_inp_size = 1 * 20, 2 * 20
+    cfg_mask = MaskGenCfg(
+        mid_min_num=2, mid_max_num=8,
+        last_min_num=5, last_max_num=10,
+    )
+    ds = DsPrices(fpath, batch_size, min_inp_size, max_inp_size)
+    batch_it = ds.get_train_it(5, cfg_mask)
+    for i, batch in enumerate(batch_it):
+        batch: BatchResType = batch
+        print(f'Batch {i}')
+        print('Prices:', batch.prices[0])
+        print('Mask:', batch.mask[0].flatten())
+        print('Discount:', batch.discount[0].flatten())
+
+
+if __name__ == '__main__':
+    test_ds()
 

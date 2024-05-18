@@ -101,5 +101,3 @@ class FinMetricCalc:
             for met in self.metrics:
                 met.diff_mean /= self.n_steps_calc
 
-
-

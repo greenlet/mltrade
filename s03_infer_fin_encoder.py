@@ -28,14 +28,8 @@ class ArgsInfer(BaseModel):
     device: str = Field(
         'cpu',
         required=False,
-        description='Device to run training on. Can have values: "cpu", "gpu"',
+        description='Device to run inference on. Can have values: "cpu", "gpu"',
         cli=('--device',)
-    )
-    days: Optional[int] = Field(
-        None,
-        required=False,
-        description='Number of training epochs.',
-        cli=('--epochs',),
     )
     batch_size: Optional[int] = Field(
         None,
@@ -43,18 +37,6 @@ class ArgsInfer(BaseModel):
         description='Batch size.',
         cli=('--batch-size',),
     )
-
-
-def masked_mse_loss(out: torch.Tensor, tgt: torch.Tensor, div: torch.Tensor) -> torch.Tensor:
-    mask = tgt > 0
-    diff = torch.masked_select(out, mask) - torch.masked_select(tgt, mask)
-    diff /= torch.masked_select(div, mask)
-    return torch.mean(diff**2)
-
-
-def gen_train_subdir_name() -> str:
-    dt_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-    return dt_str
 
 
 def main(args: ArgsInfer) -> int:
@@ -70,9 +52,7 @@ def main(args: ArgsInfer) -> int:
     d_v = 32
     dropout_rate = 0.1
     train_ratio = 0.9
-    min_inp_size = 20 * 105 # 105 5-min intervals in a trading day (10:00 - 18:45)
-    max_inp_size = 90 * 105
-    min_inp_size = 5 * 105
+    min_inp_size = 19 * 105
     max_inp_size = 20 * 105
     min_inp_zeros = 2
     max_inp_zeros_rate = 0.6
@@ -87,16 +67,13 @@ def main(args: ArgsInfer) -> int:
 
     ds = DsPrices(
         fpath=args.ds_file_path, batch_size=args.batch_size, min_inp_size=min_inp_size,
-        max_inp_size=max_inp_size, min_inp_zeros=min_inp_zeros, max_inp_zeros_rate=max_inp_zeros_rate,
-        train_ratio=train_ratio,
+        max_inp_size=max_inp_size, train_ratio=train_ratio,
     )
 
-    train_subdir_name = gen_train_subdir_name()
-    train_path = args.train_root_path / train_subdir_name
-    train_path.mkdir(parents=True, exist_ok=True)
-    print(f'Train path: {train_path}')
-    tbsw = tb.SummaryWriter(log_dir=str(train_path))
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    checkpoint_fpath = args.train_path / 'best.pth'
+    checkpoint = torch.load(checkpoint_fpath)
+    print(f'Checkpoint keys: {list(checkpoint.keys())}')
+    model.load_state_dict(checkpoint['model'])
     for epoch in range(args.epochs):
         train_it = ds.get_train_it(args.train_epoch_steps, with_tensor=True)
         pbar = trange(args.train_epoch_steps, desc=f'Epoch {epoch}', unit='batch')

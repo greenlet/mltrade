@@ -87,8 +87,6 @@ def main(args: ArgsTrain) -> int:
     max_inp_size = 90 * 105
     min_inp_size = 5 * 105
     max_inp_size = 20 * 105
-    min_inp_zeros = 2
-    max_inp_zeros_rate = 0.6
     device = torch.device(args.device)
     print(f'Pytorch device: {device}')
 
@@ -114,7 +112,7 @@ def main(args: ArgsTrain) -> int:
     last_zeros = [1, 3, 5, 10]
     cfg_mask = MaskGenCfg(mid_min_num=2, mid_max_ratio=0.6, last_min_num=1, last_max_num=10)
     for epoch in range(args.epochs):
-        train_it = ds.get_train_it(args.train_epoch_steps, with_tensor=True, cfgm=cfg_mask)
+        train_it = ds.get_train_it(args.train_epoch_steps, cfgm=cfg_mask)
         pbar = trange(args.train_epoch_steps, desc=f'Epoch {epoch}', unit='batch')
         model.train()
         train_loss = 0
@@ -140,7 +138,7 @@ def main(args: ArgsTrain) -> int:
         for met in train_metric.metrics:
             tbsw.add_scalar(f'Diff@{met.horizon}/Train', met.diff_mean, epoch)
 
-        val_it = ds.get_val_it(args.val_epoch_steps, with_tensor=True, cfgm=cfg_mask)
+        val_it = ds.get_val_it(args.val_epoch_steps, cfgm=cfg_mask)
         pbar = trange(args.val_epoch_steps, desc=f'Epoch {epoch}', unit='batch')
         model.eval()
         val_loss = 0
