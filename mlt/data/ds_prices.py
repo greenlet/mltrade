@@ -89,7 +89,7 @@ class BatchResType:
     n_prices: int
 
     def __init__(self, prices: list[np.ndarray], timestamp: list[np.ndarray],
-                 mask: Optional[list[np.ndarray]], discount: Optional[list[np.ndarray]]):
+                 mask: Optional[list[np.ndarray]] = None, discount: Optional[list[np.ndarray]] = None):
         self.prices = prices
         self.timestamp = timestamp
         self.mask = mask
